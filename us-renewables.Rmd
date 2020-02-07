@@ -1,10 +1,199 @@
 ---
-title: "us-renewables"
+title: "Lab 5"
 author: "Lizzy Schattle"
 date: "2/6/2020"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
+
+```{r}
+#attach packages
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(here)
+library(sf)
+library(tmap)
+library(tsibble)
+library(fable)
+library(fabletools)
+library(feasts)
+library(forecast)
+library(mapview)
+library(paletteer)
+```
+
+## Monthly US Energy Consumption (Renewables)
+
+```{r}
+us_renew <- read_csv(here("data", "renewables_cons_prod.csv")) %>% 
+  clean_names()
+
+```
+
+- Make description all lowercase
+- only keep observations where description variable contains "consumption"
+- remove any observations where description variable contains "total"
+
+```{r}
+renew_clean <- us_renew %>%
+  mutate(description = str_to_lower(description)) %>% 
+  filter(str_detect(description, pattern = "consumption")) %>%
+  filter(!str_detect(description, pattern = "total")) # ! means do the opposite of what you ask
+```
+
+### Convert 'yyyymm' column to date
+
+```{r}
+renew_date <- renew_clean %>%
+  mutate(yr_mo_day = lubridate::parse_date_time(yyyymm, "ym")) %>% 
+  mutate(month_sep = yearmonth(yr_mo_day)) %>% 
+  mutate(value = as.numeric(value)) %>% 
+  drop_na(month_sep, value)
+
+# make version where month and year are in separate columns:
+renew_parsed <-  renew_date %>% 
+  mutate(month = month(yr_mo_day, label = TRUE)) %>% 
+  mutate(year = year(yr_mo_day))
+```
+
+### look back at it
+
+```{r}
+renew_gg <- ggplot(data = renew_date, aes(x = month_sep,
+                                          y = value,
+                                          group = description,
+                                          color = description)) +
+  geom_line() +
+  theme_bw()
+
+renew_gg
+```
+
+Updating colors with paleteer palettes:
+
+```{r}
+renew_gg +
+  scale_color_paletteer_d("nationalparkcolors::Badlands")
+```
+
+
+### coerce renew_parsed to a tsibble
+
+```{r}
+renew_ts <- as_tsibble(renew_parsed, key = description, index = month_sep)
+```
+
+
+look at time series data in a couple ways:
+
+```{r}
+renew_ts %>% 
+  autoplot(value)
+
+renew_ts %>% 
+  gg_subseries(value)
+
+# renew_ts %>% 
+  # gg_season(value)
+
+
+ggplot(data = renew_parsed,
+       aes(x = month,
+           y = value,
+           group = year)) +
+  geom_line(aes(color = year)) +
+  facet_wrap(~description,
+             ncol = 1,
+             scales = "free",
+             strip.position = "right")
+  
+```
+
+
+### Just look at hydroelectric energy consumption
+
+```{r}
+hydro_ts <- renew_ts %>% 
+  filter(description == "hydroelectric power consumption")
+
+hydro_ts %>% 
+  autoplot(value)
+
+hydro_ts %>% 
+  gg_subseries(value)
+
+#hydro_ts %>% 
+  #gg_season(value)
+
+
+ggplot(hydro_ts, aes(x = month,
+                     y = value,
+                     group = year)) +
+  geom_line(aes(color = year))
+```
+
+### If i want the quarterly average consumption for hydroelectric power
+
+```{r}
+hydro_quarterly <- hydro_ts %>% 
+  index_by(year_qu= ~(yearquarter(.))) %>% 
+  summarize(avg_consumption = mean(value))
+
+head(hydro_quarterly)
+```
+
+
+
+### decompose that hydro_ts
+
+```{r}
+dcmp <- hydro_ts %>% 
+  model(STL(value ~ season(window = 5)))
+
+components(dcmp) %>% 
+  autoplot()
+```
+
+
+```{r}
+hist(components(dcmp)$remainder)
+```
+
+now we look at ACF
+```{r}
+hydro_ts %>% 
+  ACF(value) %>% 
+  autoplot()
+```
+### DANGER FORECASTING!!!!!
+```{r}
+hydro_model <- hydro_ts %>% 
+  model(
+    ARIMA(value),
+    ETS(value)
+  ) %>%
+  fabletools::forecast(h = "4 years")
+
+hydro_model %>% 
+  autoplot(filter(hydro_ts, year(month_sep) > 2010))
+```
+
+### make a world map woohoo!!
+```{r}
+world <- read_sf(here("data", "TM_WORLD_BORDERS_SIMPL-0.3-1"),
+                 layer = "TM_WORLD_BORDERS_SIMPL-0.3")
+
+#mapview(world)
+```
+
+
+
+
+
+
+
+
